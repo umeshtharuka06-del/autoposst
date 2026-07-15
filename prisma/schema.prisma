@@ -1,0 +1,355 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ===================== Enums =====================
+
+enum UserRole {
+  OWNER
+  ADMIN
+  EDITOR
+}
+
+enum Language {
+  EN
+  SI
+  TA
+}
+
+enum Tone {
+  PROFESSIONAL
+  FRIENDLY
+  GAMING
+  LUXURY
+  CASUAL
+}
+
+enum MediaType {
+  PHOTO
+  VIDEO
+  DOCUMENT
+}
+
+enum PostStatus {
+  RECEIVED
+  PROCESSING_MEDIA
+  GENERATING
+  READY
+  SCHEDULED
+  PUBLISHING
+  PUBLISHED
+  PARTIALLY_PUBLISHED
+  FAILED
+  CANCELLED
+}
+
+enum Platform {
+  FACEBOOK
+  PINTEREST
+  REDDIT
+}
+
+enum PlatformJobStatus {
+  PENDING
+  QUEUED
+  ACTIVE
+  COMPLETED
+  FAILED
+  DEAD
+  CANCELLED
+}
+
+enum ScheduledJobStatus {
+  PENDING
+  DISPATCHED
+  CANCELLED
+}
+
+enum DraftStatus {
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+  PUBLISHED
+  PUBLISH_FAILED
+}
+
+enum LogLevel {
+  DEBUG
+  INFO
+  WARN
+  ERROR
+}
+
+// ===================== Models =====================
+
+model User {
+  id           String    @id @default(cuid())
+  telegramId   BigInt    @unique @map("telegram_id")
+  username     String?
+  firstName    String?   @map("first_name")
+  role         UserRole  @default(EDITOR)
+  language     Language  @default(EN)
+  tone         Tone      @default(FRIENDLY)
+  isActive     Boolean   @default(true) @map("is_active")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  messages     TelegramMessage[]
+  posts        Post[]
+  auditLogs    AuditLog[]
+  reviewedDrafts RedditDraft[] @relation("DraftReviewer")
+
+  @@map("users")
+}
+
+model TelegramMessage {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  messageId    BigInt   @map("message_id")
+  chatId       BigInt   @map("chat_id")
+  mediaGroupId String?  @map("media_group_id")
+  caption      String?
+  raw          Json
+  postId       String?  @map("post_id")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  user User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  post Post? @relation(fields: [postId], references: [id], onDelete: SetNull)
+
+  @@unique([chatId, messageId])
+  @@index([mediaGroupId])
+  @@map("telegram_messages")
+}
+
+model Post {
+  id          String     @id @default(cuid())
+  userId      String     @map("user_id")
+  caption     String?
+  tone        Tone       @default(FRIENDLY)
+  status      PostStatus @default(RECEIVED)
+  autoPublish Boolean    @default(true) @map("auto_publish")
+  scheduledAt DateTime?  @map("scheduled_at")
+  error       String?
+  createdAt   DateTime   @default(now()) @map("created_at")
+  updatedAt   DateTime   @updatedAt @map("updated_at")
+
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages      TelegramMessage[]
+  media         Media[]
+  translations  Translation[]
+  aiOutputs     AiOutput[]
+  platformJobs  PlatformJob[]
+  scheduledJobs ScheduledJob[]
+  redditDrafts  RedditDraft[]
+
+  @@index([status])
+  @@index([userId, createdAt])
+  @@map("posts")
+}
+
+model Media {
+  id             String    @id @default(cuid())
+  postId         String    @map("post_id")
+  telegramFileId String    @map("telegram_file_id")
+  type           MediaType
+  mimeType       String?   @map("mime_type")
+  fileSize       Int?      @map("file_size")
+  width          Int?
+  height         Int?
+  duration       Int?
+  localPath      String?   @map("local_path")
+  thumbnailPath  String?   @map("thumbnail_path")
+  compressedPath String?   @map("compressed_path")
+  sortOrder      Int       @default(0) @map("sort_order")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@map("media")
+}
+
+model AiOutput {
+  id               String   @id @default(cuid())
+  postId           String   @map("post_id")
+  model            String
+  promptTokens     Int?     @map("prompt_tokens")
+  completionTokens Int?     @map("completion_tokens")
+  rawResponse      Json     @map("raw_response")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@map("ai_outputs")
+}
+
+model Translation {
+  id          String   @id @default(cuid())
+  postId      String   @map("post_id")
+  platform    Platform
+  language    Language
+  title       String?
+  body        String
+  description String?
+  keywords    String[]
+  hashtags    String[]
+  altText     String?  @map("alt_text")
+  cta         String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, platform, language])
+  @@map("translations")
+}
+
+model PlatformJob {
+  id             String            @id @default(cuid())
+  postId         String            @map("post_id")
+  platform       Platform
+  targetId       String?           @map("target_id")
+  language       Language          @default(EN)
+  status         PlatformJobStatus @default(PENDING)
+  attempts       Int               @default(0)
+  bullJobId      String?           @map("bull_job_id")
+  externalPostId String?           @map("external_post_id")
+  externalUrl    String?           @map("external_url")
+  errorMessage   String?           @map("error_message")
+  publishedAt    DateTime?         @map("published_at")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  post Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  logs JobLog[]
+
+  @@index([postId])
+  @@index([status])
+  @@map("platform_jobs")
+}
+
+model ScheduledJob {
+  id        String             @id @default(cuid())
+  postId    String             @map("post_id")
+  runAt     DateTime           @map("run_at")
+  status    ScheduledJobStatus @default(PENDING)
+  bullJobId String?            @map("bull_job_id")
+  createdAt DateTime           @default(now()) @map("created_at")
+  updatedAt DateTime           @updatedAt @map("updated_at")
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([status, runAt])
+  @@map("scheduled_jobs")
+}
+
+model JobLog {
+  id            String   @id @default(cuid())
+  platformJobId String?  @map("platform_job_id")
+  queue         String
+  bullJobId     String?  @map("bull_job_id")
+  level         LogLevel @default(INFO)
+  message       String
+  data          Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  platformJob PlatformJob? @relation(fields: [platformJobId], references: [id], onDelete: SetNull)
+
+  @@index([platformJobId])
+  @@index([createdAt])
+  @@map("job_logs")
+}
+
+model FailedJob {
+  id           String   @id @default(cuid())
+  queue        String
+  bullJobId    String?  @map("bull_job_id")
+  name         String
+  data         Json
+  failedReason String   @map("failed_reason")
+  stacktrace   String?
+  attemptsMade Int      @default(0) @map("attempts_made")
+  resolved     Boolean  @default(false)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([queue, resolved])
+  @@map("failed_jobs")
+}
+
+model FacebookPage {
+  id             String   @id @default(cuid())
+  pageId         String   @unique @map("page_id")
+  name           String
+  encryptedToken String   @map("encrypted_token")
+  isDefault      Boolean  @default(false) @map("is_default")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("facebook_pages")
+}
+
+model PinterestBoard {
+  id        String   @id @default(cuid())
+  boardId   String   @unique @map("board_id")
+  name      String
+  isDefault Boolean  @default(false) @map("is_default")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("pinterest_boards")
+}
+
+model RedditDraft {
+  id           String      @id @default(cuid())
+  postId       String      @map("post_id")
+  subreddit    String
+  title        String
+  body         String
+  language     Language    @default(EN)
+  status       DraftStatus @default(PENDING_REVIEW)
+  reviewedById String?     @map("reviewed_by_id")
+  reviewNotes  String?     @map("review_notes")
+  externalUrl  String?     @map("external_url")
+  errorMessage String?     @map("error_message")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  post       Post  @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reviewedBy User? @relation("DraftReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@map("reddit_drafts")
+}
+
+model Setting {
+  key       String   @id
+  value     String
+  isSecret  Boolean  @default(false) @map("is_secret")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("settings")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  action    String
+  entity    String?
+  entityId  String?  @map("entity_id")
+  details   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([createdAt])
+  @@map("audit_logs")
+}
