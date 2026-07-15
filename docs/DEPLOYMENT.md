@@ -1,92 +1,75 @@
-# Ubuntu VPS Deployment Guide
+# Deployment Guide
 
-Tested on Ubuntu 22.04/24.04, 1 vCPU / 2 GB RAM minimum (2 GB+ recommended for video processing).
+Two supported paths — **Portainer Stacks (recommended)** and plain Docker Compose CLI. Neither uses a `.env` file: all configuration is plain environment variables.
 
-## 1. Prepare the server
+## A. Portainer Stacks (one-click)
+
+Requirements: Portainer CE with a Docker environment on Ubuntu (or any Linux host).
+
+1. **Portainer → Stacks → Add stack**
+2. **Build method: Repository**
+   - Repository URL: your git repo URL
+   - Compose path: `docker-compose.yml`
+   (Portainer builds the app image from the bundled `Dockerfile` automatically.)
+3. **Environment variables** — add these in the UI panel:
+
+   | Variable | Required | Value |
+   |---|---|---|
+   | `TELEGRAM_BOT_TOKEN` | ✅ | from [@BotFather](https://t.me/BotFather) |
+   | `TELEGRAM_ALLOWED_USER_IDS` | ✅ | comma-separated numeric IDs ([@userinfobot](https://t.me/userinfobot)); first = owner |
+   | `OPENAI_API_KEY` | ✅ | platform.openai.com |
+   | `POSTGRES_PASSWORD` | ✅ | long random string |
+   | `REDIS_PASSWORD` | ✅ | long random string |
+   | `ENCRYPTION_KEY` | ✅ | exactly 64 hex chars (`openssl rand -hex 32`) |
+   | `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_REFRESH_TOKEN` / `REDDIT_USER_AGENT` | optional | reddit.com/prefs/apps (script app) |
+   | `OPENAI_MODEL`, `LOG_LEVEL`, `TZ`, `WORKER_CONCURRENCY`, … | optional | see comments at the top of `docker-compose.yml` for all defaults |
+
+   Tip: `./install.sh secrets` (or `openssl rand -hex 24` / `-hex 32`) generates the three secret values.
+
+4. **Deploy the stack.** Migrations run automatically on container start. Message your bot `/start`.
+
+**Updating:** Stacks → your stack → *Pull and redeploy* (git) — environment variables are kept by Portainer.
+
+**Data:** everything lives in named volumes `pgdata`, `redisdata`, `mediadata` — redeploys never touch them.
+
+⚠️ Keep `ENCRYPTION_KEY` safe outside Portainer too: platform tokens in the database are encrypted with it and a restored backup is unreadable without it.
+
+## B. Docker Compose CLI
+
+Configuration comes from the shell environment (compose interpolates `${VARS}` directly):
 
 ```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y git curl openssl
-
-# firewall: the bot uses outbound long polling only — no inbound ports needed
-sudo ufw allow OpenSSH
-sudo ufw enable
-```
-
-Create a non-root user if you don't have one:
-
-```bash
-sudo adduser autopost && sudo usermod -aG sudo autopost
-su - autopost
-```
-
-## 2. Get the code and install
-
-```bash
-git clone <your-repo-url> autopost
-cd autopost
+git clone <your-repo-url> autopost && cd autopost
 chmod +x install.sh update.sh backup.sh restore.sh docker-entrypoint.sh
-./install.sh
+./install.sh        # prompts for required values, generates secrets, deploys
 ```
 
-`install.sh` installs Docker if missing, generates strong secrets into `.env`, builds the images, applies Prisma migrations automatically on container start, and launches everything.
+`install.sh` never writes a `.env` file — it prints the generated secrets once; store them in your password manager and export them before future `docker compose up` / `./update.sh` runs.
 
-> If you were just added to the `docker` group, log out and back in before re-running.
+## Connect the platforms (both paths, inside Telegram)
 
-## 3. Create the Telegram bot
+- **Facebook:** get a long-lived Page token (Graph API Explorer, `pages_manage_posts` + `pages_read_engagement`), then `/facebook add <pageId> <token>`. Repeat per Page; `/facebook default <pageId>`.
+- **Pinterest:** `/pinterest token <accessToken>` (scopes `boards:read pins:read pins:write`), then `/pinterest boards`, then `/pinterest default <boardId>`.
+- **Reddit (drafts only):** set the four `REDDIT_*` stack variables and redeploy. Reddit is never auto-posted — each post produces one draft that you approve or reject in Telegram.
 
-1. Open [@BotFather](https://t.me/BotFather) → `/newbot` → copy the token into `TELEGRAM_BOT_TOKEN`.
-2. Get your numeric user ID from [@userinfobot](https://t.me/userinfobot) → put it in `TELEGRAM_ALLOWED_USER_IDS` (comma-separate additional editors; the **first** ID is the owner/admin).
-3. `docker compose up -d` (restart after editing `.env`).
-4. Message the bot: `/start`.
+## Day-2 operations
 
-Security note: the bot uses long polling (no public webhook, no open ports). Every update is checked against the user-ID allowlist; strangers are silently ignored and logged.
+| Task | Portainer | CLI |
+|---|---|---|
+| Logs | Containers → app → Logs | `docker compose logs -f app` |
+| Update | Stack → Pull and redeploy | `./update.sh` (vars exported in shell) |
+| Backup | `PG_CONTAINER=<stack>-postgres-1 APP_CONTAINER=<stack>-app-1 ./backup.sh` | `./backup.sh` |
+| Restore | same, with `./restore.sh backups/<stamp>` | `./restore.sh backups/<stamp>` |
 
-## 4. Connect Facebook
+Backups read database credentials from inside the running containers, so they work without any local configuration.
 
-1. Create an app at developers.facebook.com, add the **Pages API**.
-2. In [Graph API Explorer](https://developers.facebook.com/tools/explorer):
-   - select your app, request `pages_manage_posts`, `pages_read_engagement`, `pages_show_list`,
-   - generate a user token, then exchange for a **long-lived** token,
-   - call `GET /me/accounts` to obtain each Page's **id** and long-lived **Page access token**.
-3. In Telegram: `/facebook add <pageId> <pageToken>` — the token is verified against the Graph API and stored AES-256-GCM encrypted. Repeat for multiple Pages; `/facebook default <pageId>` picks the publish target (no default = publish to all active pages).
-
-## 5. Connect Pinterest
-
-1. Create an app at developers.pinterest.com with `boards:read`, `pins:read`, `pins:write` scopes and complete the OAuth flow to obtain an access token.
-2. In Telegram:
-   - `/pinterest token <accessToken>` (verified + stored encrypted)
-   - `/pinterest boards` (syncs your boards)
-   - `/pinterest default <boardId>`
-
-## 6. Connect Reddit (optional — drafts only)
-
-1. reddit.com/prefs/apps → create **script** app → note client id + secret.
-2. Obtain a refresh token with the `submit read` scopes (any standard OAuth helper works).
-3. Fill `REDDIT_CLIENT_ID`, `REDDIT_CLIENT_SECRET`, `REDDIT_REFRESH_TOKEN`, `REDDIT_USER_AGENT` in `.env` and `docker compose up -d`.
-
-Reddit posts are **never automatic**: each Telegram post produces one draft, the bot shows the target subreddit's rules, and nothing is submitted until you tap **Approve** — one submission per approval.
-
-## 7. Day-2 operations
-
-| Task | Command |
-|---|---|
-| Live logs | `docker compose logs -f app` |
-| Restart | `docker compose restart app` |
-| Update to latest code | `./update.sh` (backs up first) |
-| Backup (DB + media + .env) | `./backup.sh` → `backups/<timestamp>/` |
-| Restore | `./restore.sh backups/<timestamp>` |
-| Nightly backups | `crontab -e` → `0 3 * * * cd /home/autopost/autopost && ./backup.sh >> backups/cron.log 2>&1` |
-
-Copy `backups/` off-site regularly (contains secrets — restrict access).
-
-## 8. Troubleshooting
+## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| Bot silent | `docker compose logs app` — check `TELEGRAM_BOT_TOKEN`, allowlist IDs |
-| `Invalid environment configuration` on start | the app prints exactly which `.env` variable is wrong |
-| Facebook `code 190` | Page token expired — regenerate long-lived token, `/facebook add` again |
-| Pinterest 401 | token expired — `/pinterest token <new>` |
-| Publishes stuck in FAILED | `/logs` for the reason, `/retry` to re-queue |
-| Disk filling up | old media in `storage/media/<postId>` can be pruned after publishing |
+| Stack fails: `variable is required` | a required Portainer environment variable is missing — the error names it |
+| Bot silent | app container logs; check `TELEGRAM_BOT_TOKEN` and allowlist IDs |
+| `Invalid environment configuration` in app logs | the app prints exactly which variable is wrong (e.g. `ENCRYPTION_KEY must be 64 hex chars`) |
+| Facebook `code 190` | Page token expired — `/facebook add` again with a fresh long-lived token |
+| Pinterest 401 | `/pinterest token <new>` |
+| Publishes stuck FAILED | `/logs` for the reason, `/retry` to re-queue |
