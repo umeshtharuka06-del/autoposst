@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
-# Restores a backup created by backup.sh. Usage: ./restore.sh backups/20260715_120000
+# Restores a backup created by backup.sh — no .env file used.
+# Usage: ./restore.sh backups/20260715_120000
+#
+# For Portainer stacks set container names explicitly:
+#   PG_CONTAINER=autopost-postgres-1 APP_CONTAINER=autopost-app-1 ./restore.sh backups/<stamp>
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -17,23 +21,51 @@ if [ "$CONFIRM" != "restore" ]; then
   exit 1
 fi
 
-# shellcheck disable=SC1091
-source <(grep -E '^(POSTGRES_USER|POSTGRES_DB)=' .env || true)
-POSTGRES_USER=${POSTGRES_USER:-autopost}
-POSTGRES_DB=${POSTGRES_DB:-autopost}
+pg_exec() {
+  if [ -n "${PG_CONTAINER:-}" ]; then
+    docker exec -i "$PG_CONTAINER" "$@"
+  else
+    docker compose exec -T postgres "$@"
+  fi
+}
+
+app_exec() {
+  if [ -n "${APP_CONTAINER:-}" ]; then
+    docker exec -i "$APP_CONTAINER" "$@"
+  else
+    docker compose exec -T app "$@"
+  fi
+}
+
+stop_app() {
+  if [ -n "${APP_CONTAINER:-}" ]; then
+    docker stop "$APP_CONTAINER"
+  else
+    docker compose stop app
+  fi
+}
+
+start_app() {
+  if [ -n "${APP_CONTAINER:-}" ]; then
+    docker start "$APP_CONTAINER"
+  else
+    docker compose up -d app
+  fi
+}
+
+echo "==> Restoring database (credentials read from the postgres container env)..."
+pg_exec sh -c 'pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists' < "${SRC}/db.dump"
 
 echo "==> Stopping app..."
-docker compose stop app
+stop_app
 
-echo "==> Restoring database..."
-docker compose exec -T postgres pg_restore -U "$POSTGRES_USER" -d "$POSTGRES_DB" --clean --if-exists \
-  < "${SRC}/db.dump"
+echo "==> Restoring media volume..."
+start_app
+sleep 3
+app_exec sh -c 'rm -rf /app/storage/media && mkdir -p /app/storage'
+app_exec tar -xzf - -C /app < "${SRC}/storage.tar.gz"
 
-echo "==> Restoring media storage..."
-rm -rf storage
-tar -xzf "${SRC}/storage.tar.gz"
-
-echo "==> Starting app..."
-docker compose up -d app
+echo "==> Restarting app..."
+if [ -n "${APP_CONTAINER:-}" ]; then docker restart "$APP_CONTAINER"; else docker compose restart app; fi
 
 echo "==> Restore complete from ${SRC}"

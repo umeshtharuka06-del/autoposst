@@ -14,15 +14,15 @@ No website. No dashboard. Everything happens in Telegram.
 
 Node.js 22 · TypeScript (strict) · grammY · PostgreSQL + Prisma · BullMQ + Redis · OpenAI Responses API · Docker Compose
 
-## Quick start (Ubuntu VPS)
+## Quick start — Portainer Stacks (recommended)
 
-```bash
-git clone <your-repo> autopost && cd autopost
-chmod +x install.sh update.sh backup.sh restore.sh
-./install.sh
-```
+No `.env` file anywhere: all configuration is entered as **Portainer environment variables**.
 
-The installer creates `.env` with generated database/Redis passwords and encryption key, then asks you to fill in:
+1. Portainer → **Stacks → Add stack → Repository**, point at this repo (`docker-compose.yml`).
+2. Add environment variables in the UI: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ALLOWED_USER_IDS`, `OPENAI_API_KEY`, `POSTGRES_PASSWORD`, `REDIS_PASSWORD`, `ENCRYPTION_KEY` (64 hex chars — generate all three secrets with `./install.sh secrets`). Optional variables and their defaults are listed at the top of `docker-compose.yml`.
+3. **Deploy.** Migrations run automatically; message the bot `/start`.
+
+CLI alternative (also `.env`-free — reads shell env): `./install.sh`
 
 | Variable | Where to get it |
 |---|---|
@@ -70,8 +70,10 @@ This project deliberately does **not** mass-post to Reddit. For each post it gen
 ## Operations
 
 ```bash
-docker compose logs -f app   # live logs
-./update.sh                  # pull, rebuild, migrate, restart
-./backup.sh                  # pg_dump + media archive into backups/
+docker compose logs -f app   # live logs (Portainer: container Logs view)
+./update.sh                  # CLI: pull, rebuild, migrate, restart (Portainer: "Pull and redeploy")
+./backup.sh                  # pg_dump + media archive into backups/ (no config needed)
 ./restore.sh backups/<stamp> # full restore
 ```
+
+Media, PostgreSQL and Redis data live in named volumes (`mediadata`, `pgdata`, `redisdata`) and survive redeploys.
