@@ -51,20 +51,12 @@ export function registerPlatformCommands(bot: Bot<BotContext>): void {
           });
           return;
         }
-        case 'default': {
-          if (!(await guardAdmin(ctx))) return;
-          const [pageId] = rest;
-          if (!pageId) return void (await ctx.reply('Usage: /facebook default <pageId>'));
-          await facebookRepository.setDefault(pageId);
-          await ctx.reply(`⭐ Default Facebook Page set to ${pageId}.`);
-          return;
-        }
         case 'remove': {
           if (!(await guardAdmin(ctx))) return;
           const [pageId] = rest;
           if (!pageId) return void (await ctx.reply('Usage: /facebook remove <pageId>'));
           await facebookRepository.deactivate(pageId);
-          await ctx.reply(`🗑 Facebook Page ${pageId} deactivated.`);
+          await ctx.reply(`🗑 Facebook Page ${pageId} deactivated — it will no longer receive posts.`);
           return;
         }
         default: {
@@ -77,10 +69,11 @@ export function registerPlatformCommands(bot: Bot<BotContext>): void {
             return;
           }
           const lines = pages
-            .map((p) => `${p.isDefault ? '⭐' : '•'} ${escapeHtml(p.name)} (<code>${p.pageId}</code>)${p.isActive ? '' : ' — inactive'}`)
+            .map((p) => `• ${escapeHtml(p.name)} (<code>${p.pageId}</code>)${p.isActive ? '' : ' — inactive'}`)
             .join('\n');
           await ctx.reply(
-            `<b>Facebook Pages</b>\n${lines}\n\nCommands: add &lt;id&gt; &lt;token&gt; | default &lt;id&gt; | remove &lt;id&gt;`,
+            `<b>Facebook Pages</b> — posts publish to <b>every active page</b>\n${lines}\n\n` +
+              `Commands: add &lt;id&gt; &lt;token&gt; | remove &lt;id&gt;`,
             { parse_mode: 'HTML' },
           );
           return;

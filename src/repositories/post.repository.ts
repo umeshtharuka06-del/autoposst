@@ -54,6 +54,19 @@ export class PostRepository {
     return prisma.post.update({ where: { id }, data: { status, error: error ?? null } });
   }
 
+  /**
+   * Atomically moves a post from `from` to `to`. Returns true only for the
+   * caller that actually performed the transition — used so concurrent
+   * publish workers settle a post (and send its report) exactly once.
+   */
+  async transitionStatus(id: string, from: PostStatus, to: PostStatus): Promise<boolean> {
+    const res = await prisma.post.updateMany({
+      where: { id, status: from },
+      data: { status: to },
+    });
+    return res.count === 1;
+  }
+
   update(id: string, data: Prisma.PostUpdateInput): Promise<Post> {
     return prisma.post.update({ where: { id }, data });
   }

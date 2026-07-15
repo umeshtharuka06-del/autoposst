@@ -23,6 +23,8 @@ import {
   enqueueScheduled,
   removeScheduledBullJob,
 } from '../queues/queues';
+import { escapeHtml, notifyUser } from '../telegram/notifier';
+import { retryKeyboard as retryKeyboardMarkup } from '../telegram/keyboards';
 
 export interface IncomingMediaItem {
   telegramFileId: string;
@@ -101,13 +103,13 @@ export class PostService {
     const skipped: string[] = [];
     let created = 0;
 
-    // Facebook: default page if set, otherwise every active page.
+    // Facebook: fan out to EVERY active page — one platform job per page so
+    // each page's result (success/failure/retries) is tracked independently.
     const pages = await facebookRepository.listActive();
-    const fbTargets = pages.some((p) => p.isDefault) ? pages.filter((p) => p.isDefault) : pages;
-    if (fbTargets.length === 0) {
+    if (pages.length === 0) {
       skipped.push('Facebook (no pages configured — /facebook add)');
     }
-    for (const page of fbTargets) {
+    for (const page of pages) {
       const job = await jobRepository.createPlatformJob({
         postId,
         platform: Platform.FACEBOOK,
@@ -177,33 +179,91 @@ export class PostService {
         )
       : await jobRepository.findFailedPlatformJobs(20);
 
+    const postIds = new Set<string>();
     for (const job of failed) {
       await jobRepository.updatePlatformJob(job.id, {
         status: PlatformJobStatus.PENDING,
         errorMessage: null,
       });
       await enqueuePublish(job.id);
+      postIds.add(job.postId);
+    }
+    // Back to PUBLISHING so the settle-transition (and its report) fires again.
+    for (const id of postIds) {
+      await postRepository.updateStatus(id, PostStatus.PUBLISHING);
     }
     return failed.length;
   }
 
-  /** Called by the publish worker after each platform job settles to roll up post status. */
+  /**
+   * Called by the publish worker after each platform job settles. When the
+   * LAST job settles, rolls up the post status and sends ONE aggregated
+   * publish report. The status transition is atomic (updateMany with a
+   * status guard), so concurrent workers can't send duplicate reports.
+   */
   async refreshPostStatus(postId: string): Promise<void> {
     const jobs = await jobRepository.findPlatformJobsByPost(postId);
     if (jobs.length === 0) return;
 
     const done = jobs.filter((j) => j.status === PlatformJobStatus.COMPLETED).length;
-    const dead = jobs.filter((j) => j.status === PlatformJobStatus.DEAD || j.status === PlatformJobStatus.FAILED).length;
-    const settled = done + dead;
-    if (settled < jobs.length) return;
+    const dead = jobs.filter((j) => j.status === PlatformJobStatus.DEAD).length;
+    const cancelled = jobs.filter((j) => j.status === PlatformJobStatus.CANCELLED).length;
+    // FAILED = attempt failed but BullMQ retries are still pending → not settled.
+    if (done + dead + cancelled < jobs.length) return;
 
-    if (dead === 0) {
-      await postRepository.updateStatus(postId, PostStatus.PUBLISHED);
-    } else if (done > 0) {
-      await postRepository.updateStatus(postId, PostStatus.PARTIALLY_PUBLISHED);
-    } else {
-      await postRepository.updateStatus(postId, PostStatus.FAILED, 'All platform publishes failed');
+    const terminal =
+      dead === 0
+        ? PostStatus.PUBLISHED
+        : done > 0
+          ? PostStatus.PARTIALLY_PUBLISHED
+          : PostStatus.FAILED;
+
+    const won = await postRepository.transitionStatus(postId, PostStatus.PUBLISHING, terminal);
+    if (won) {
+      await this.sendPublishReport(postId);
     }
+  }
+
+  /** Aggregated per-target publish report, sent once per publish round. */
+  private async sendPublishReport(postId: string): Promise<void> {
+    const post = await postRepository.findWithRelations(postId);
+    if (!post) return;
+
+    const successes: string[] = [];
+    const failures: string[] = [];
+    for (const job of post.platformJobs) {
+      if (job.status === PlatformJobStatus.CANCELLED) continue;
+      const name = await this.targetLabel(job.platform, job.targetId);
+      if (job.status === PlatformJobStatus.COMPLETED) {
+        successes.push(`- ${escapeHtml(name)}${job.externalUrl ? `\n  ${escapeHtml(job.externalUrl)}` : ''}`);
+      } else if (job.status === PlatformJobStatus.DEAD) {
+        failures.push(`- ${escapeHtml(name)}\n  ${escapeHtml((job.errorMessage ?? 'unknown error').slice(0, 300))}`);
+      }
+    }
+
+    let text = `📣 <b>Publish report</b> — post <code>${postId}</code>\n`;
+    if (successes.length > 0) text += `\n✅ <b>Success:</b>\n${successes.join('\n')}\n`;
+    if (failures.length > 0) text += `\n❌ <b>Failed:</b>\n${failures.join('\n')}\n`;
+    if (successes.length === 0 && failures.length === 0) text += '\n(no publish targets)';
+
+    await notifyUser(
+      post.user.telegramId,
+      text,
+      failures.length > 0 ? retryKeyboardMarkup(postId) : undefined,
+    );
+  }
+
+  private async targetLabel(platform: Platform, targetId: string | null): Promise<string> {
+    if (!targetId) return platform;
+    if (platform === Platform.FACEBOOK) {
+      const page = await facebookRepository.findByPageId(targetId);
+      return `Facebook: ${page?.name ?? targetId}`;
+    }
+    if (platform === Platform.PINTEREST) {
+      const board = await pinterestRepository.findByBoardId(targetId);
+      return `Pinterest: ${board?.name ?? targetId}`;
+    }
+    return `${platform}: ${targetId}`;
   }
 
   findLatestForUser(userId: string): Promise<PostWithRelations | null> {

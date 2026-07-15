@@ -28,7 +28,7 @@ Send a photo, video or album with a caption → I generate platform-ready conten
 /settings — tone, auto-publish, stored settings
 
 <b>Platforms</b>
-/facebook — manage Pages (list | add | default | remove)
+/facebook — manage Pages (list | add | remove) — publishes to ALL active pages
 /pinterest — token &amp; boards (token | boards | list | default | remove)
 /reddit — review drafts (list | show | sub)
 

@@ -14,20 +14,13 @@ export class FacebookRepository {
     return prisma.facebookPage.findUnique({ where: { pageId } });
   }
 
-  async upsert(params: { pageId: string; name: string; encryptedToken: string }): Promise<FacebookPage> {
-    const count = await prisma.facebookPage.count();
+  // Publishing fans out to ALL active pages — there is no "default" page.
+  upsert(params: { pageId: string; name: string; encryptedToken: string }): Promise<FacebookPage> {
     return prisma.facebookPage.upsert({
       where: { pageId: params.pageId },
       update: { name: params.name, encryptedToken: params.encryptedToken, isActive: true },
-      create: { ...params, isDefault: count === 0 },
+      create: params,
     });
-  }
-
-  async setDefault(pageId: string): Promise<void> {
-    await prisma.$transaction([
-      prisma.facebookPage.updateMany({ data: { isDefault: false } }),
-      prisma.facebookPage.update({ where: { pageId }, data: { isDefault: true } }),
-    ]);
   }
 
   deactivate(pageId: string): Promise<FacebookPage> {

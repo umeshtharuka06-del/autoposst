@@ -47,6 +47,7 @@ const envSchema = z.object({
   JOB_ATTEMPTS: z.coerce.number().int().min(1).max(20).default(5),
   JOB_BACKOFF_MS: z.coerce.number().int().positive().default(15000),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(20).default(3),
+  PUBLISH_CONCURRENCY: z.coerce.number().int().min(1).max(10).default(3),
 });
 
 const parsed = envSchema.safeParse(process.env);
